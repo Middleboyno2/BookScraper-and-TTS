@@ -1,7 +1,7 @@
 from bs4 import BeautifulSoup
 
 # lấy thông tin sách từ sap-ra-mat
-def get_ebook_coming_son_data(driver):
+def get_ebook_coming_soon_data(driver):
     """Trích xuất dữ liệu từ trang hiện tại"""
     soup = BeautifulSoup(driver.page_source, 'html.parser')
     
