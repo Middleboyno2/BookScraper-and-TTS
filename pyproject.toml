@@ -1,10 +1,13 @@
 [project]
-name = "fast-api"
+name = "BookScraper-and-TTS"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "beautifulsoup4>=4.13.5",
     "fastapi[standard]>=0.116.2",
+    "pandas>=2.3.2",
     "ruff>=0.13.0",
+    "selenium>=4.35.0",
 ]
