@@ -11,8 +11,7 @@ class Books:
     def __init__(self, driver):
         self.driver = driver
         
-        
-    # lấy thông tin sách từ sap-ra-mat
+    # lấy thông tin sách từ trang hiện tại  
     def get_ebook_data(self):
         soup = BeautifulSoup(self.driver.page_source, 'html.parser')
         
@@ -35,15 +34,21 @@ class Books:
                 
                 # Lấy category
                 category_tag = item.select_one(".category")
-                category = category_tag.text.strip() if category_tag else "Hot"
+                category = category_tag.text.strip() if category_tag else "null"
+                
+                # Lấy ảnh (ưu tiên data-src, fallback src)
+                img_tag = item.select_one("img")
+                img_path = ""
+                if img_tag:
+                    img_path = img_tag.get("data-src") or img_tag.get("src") or ""
                 
                 books.append({
                     "title": title,
-                    "author": "",
+                    #"author": "",
                     "genre": category,
-                    "status": "",
+                    # "status": "",
                     "url": link,
-                    "file_path": "",
+                    "img_path": img_path,
                     "views": views,
                     "downloads": downloads
                 })

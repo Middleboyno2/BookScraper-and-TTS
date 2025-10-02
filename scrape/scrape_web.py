@@ -14,12 +14,10 @@ from scrape.books import Books
 
 load_dotenv(dotenv_path="url.env")
 class Scrape:
-    @staticmethod
-    def scrape_all_pages_selenium(url):
+    def scrape_all_pages_selenium(self, url):
         # Cào tất cả trang sử dụng Selenium
         driver = setup_driver(headless=False)  # Set False để xem quá trình
         all_books = []
-        max_pages = None
         
         try:
             print(f"Đang truy cập: {url}")
@@ -32,10 +30,6 @@ class Scrape:
             
             current_page, total_pages = scrape.get_pagination_info()
             print(f"Phát hiện {total_pages} trang")
-            
-            if max_pages:
-                total_pages = min(total_pages, max_pages)
-                print(f"Giới hạn cào {max_pages} trang")
             
             page_count = 0
             
@@ -70,6 +64,71 @@ class Scrape:
             driver.quit()
         
         return pd.DataFrame(all_books)
+    
+    
+    # Dành cho các trang có pagination đơn giản
+    def scrape_all_pages_selenium_2(self, url):
+        driver = setup_driver(headless=False)  # Set False để xem quá trình
+        all_books = []
+
+        try:
+            print(f"Đang truy cập: {url}")
+            driver.get(url)
+            scrape = Books(driver)
+
+            # Đợi trang load
+            WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, '.product-small'))
+            )
+
+            # Lấy thông tin tổng số trang
+            current_page, total_pages = scrape.get_pagination_info()
+            print(f"Phát hiện {total_pages} trang")
+
+            # Loop qua từng page theo URL /page/{n}/
+            for page in range(1, total_pages + 1):
+                if page == 1:
+                    page_url = url  # trang đầu
+                else:
+                    if url.endswith("/"):
+                        page_url = f"{url}page/{page}/"
+                    else:
+                        page_url = f"{url}/page/{page}/"
+
+                print(f"\nĐang cào trang {page}: {page_url}")
+                driver.get(page_url)
+
+                # Đợi load sản phẩm
+                try:
+                    WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, '.product-small'))
+                    )
+                except Exception:
+                    print(f"Trang {page} không load được, bỏ qua.")
+                    continue
+
+                page_data = scrape.get_ebook_data()
+                all_books.extend(page_data)
+
+                print(f"Đã cào {len(page_data)} sách từ trang {page}")
+                time.sleep(5)  # tránh bị ban IP
+
+            print(f"\nTổng cộng đã cào {len(all_books)} sách từ {total_pages} trang")
+
+        finally:
+            driver.quit()
+        
+        df = pd.DataFrame(all_books)
+
+        # # Xóa trùng theo toàn bộ cột
+        # df = df.drop_duplicates()
+
+        # check trùng theo "url" (link ebook) thôi:
+        df = df.drop_duplicates(subset=["tittle"], keep="first")
+
+        return pd.DataFrame(all_books)
+
+
 
 
 # cào dữ liệu
@@ -86,7 +145,7 @@ if __name__ == "__main__":
     )
     
     # Cập nhật CSV
-    csv.update_csv(all_books_data)
+    csv.update_csv(csv_file= os.getenv("data_book_path"),new_data = all_books_data)
     
     # Thống kê
     if os.path.exists(os.getenv("data_book_path")):
