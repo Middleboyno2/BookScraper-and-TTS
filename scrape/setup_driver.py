@@ -44,6 +44,6 @@ def setup_driver(headless=True):
     driver = webdriver.Chrome(options=chrome_options)
     
     # Thiết lập timeout để tránh chờ lâu
-    driver.set_page_load_timeout(30)
+    driver.set_page_load_timeout(60)
     
     return driver

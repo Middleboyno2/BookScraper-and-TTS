@@ -120,13 +120,13 @@ class Scrape:
         
         df = pd.DataFrame(all_books)
 
-        # # Xóa trùng theo toàn bộ cột
-        # df = df.drop_duplicates()
+        # Xóa trùng theo toàn bộ cột
+        df = df.drop_duplicates()
 
         # check trùng theo "url" (link ebook) thôi:
-        df = df.drop_duplicates(subset=["tittle"], keep="first")
+        df = df.drop_duplicates(subset=["title"], keep="first")
 
-        return pd.DataFrame(all_books)
+        return df
 
 
 
