@@ -2,8 +2,6 @@ import os
 import csv
 import pandas as pd
 from dotenv import load_dotenv
-import glob
-from langchain.schema import Document
 
 load_dotenv(dotenv_path="url.env")
 
@@ -46,19 +44,3 @@ class CSV_DATA_BOOK:
             print("File CSV không tồn tại hoặc trống")
             return books
         
-    
-    def load_all_csv(self, data_folder="data"):
-        documents = []
-        for file in glob.glob(f"{data_folder}/**/*.csv", recursive=True):
-            df = pd.read_csv(file)
-            # giả sử mỗi file đều có cột: title, description, url
-            for _, row in df.iterrows():
-                content = f"{row['title']} - {row['description']}"
-                metadata = {
-                    "title": row['title'],
-                    "url": row['url'],
-                    "file": os.path.basename(file),
-                    "category": os.path.dirname(file).split(os.sep)[-1] # tên thư mục cha (thể loại)
-                }
-                documents.append(Document(page_content=content, metadata=metadata))
-        return documents

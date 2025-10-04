@@ -9,12 +9,17 @@ import os
 from dotenv import load_dotenv
 from scrape.scrape_web import Scrape
 from scrape.book_csv import CSV_DATA_BOOK
+from chatbot.chatbot import ChatbotEngine
 
 
 
 app = FastAPI()
 
 load_dotenv(dotenv_path="url.env")
+
+# Khởi tạo chatbot engine
+engine = ChatbotEngine()
+engine.init_engine()
 
 # Tự động cập nhật dữ liệu sách 1 ngày/lần
 def auto_update_books_data():
@@ -47,6 +52,11 @@ scheduler.start()
 @app.get("/")
 async def read_root():
     return {"Title": "BookScraper-and-TTS"}
+
+@app.post("/ask")
+async def ask(ques: str):
+    answer = engine.ask(ques)
+    return {"question": ques, "answer": answer}
 
 # @app.get("/bands/{band_id}")
 # async def get_bands(band_id: int) -> dict:
