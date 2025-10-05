@@ -8,3 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+
+
+chroma_db/
+data/
+models/
+*.gguf
+*.bin
+*.pt
