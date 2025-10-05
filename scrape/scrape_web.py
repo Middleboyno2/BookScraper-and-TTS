@@ -132,25 +132,25 @@ class Scrape:
 
 
 # cào dữ liệu
-if __name__ == "__main__":
-    url = "https://ebookvie.com/ebook-hot/"
+# if __name__ == "__main__":
+#     url = "https://ebookvie.com/ebook-hot/"
     
-    print("Bắt đầu cào dữ liệu với Selenium...")
-    scraper = Scrape()
-    csv = CSV_DATA_BOOK()
+#     print("Bắt đầu cào dữ liệu với Selenium...")
+#     scraper = Scrape()
+#     csv = CSV_DATA_BOOK()
     
-    # Cào dữ liệu
-    all_books_data = scraper.scrape_all_pages_selenium(
-        url=os.getenv("NEW_BOOK_URL"),
-    )
+#     # Cào dữ liệu
+#     all_books_data = scraper.scrape_all_pages_selenium(
+#         url=os.getenv("NEW_BOOK_URL"),
+#     )
     
-    # Cập nhật CSV
-    csv.update_csv(csv_file= os.getenv("data_book_path"),new_data = all_books_data)
+#     # Cập nhật CSV
+#     csv.update_csv(csv_file= os.getenv("data_book_path"),new_data = all_books_data)
     
-    # Thống kê
-    if os.path.exists(os.getenv("data_book_path")):
-        final_data = pd.read_csv(os.getenv("data_book_path"))
-        print(f"\nThống kê cuối cùng:")
-        print(f"- Tổng số sách: {len(final_data)}")
-        if 'genre' in final_data.columns:
-            print(f"- Các thể loại: {final_data['genre'].nunique()} loại")
+#     # Thống kê
+#     if os.path.exists(os.getenv("data_book_path")):
+#         final_data = pd.read_csv(os.getenv("data_book_path"))
+#         print(f"\nThống kê cuối cùng:")
+#         print(f"- Tổng số sách: {len(final_data)}")
+#         if 'genre' in final_data.columns:
+#             print(f"- Các thể loại: {final_data['genre'].nunique()} loại")

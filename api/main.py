@@ -12,14 +12,13 @@ from scrape.book_csv import CSV_DATA_BOOK
 from chatbot.chatbot import ChatbotEngine
 
 
-
-app = FastAPI()
-
 load_dotenv(dotenv_path="url.env")
 
+app = FastAPI()
 # Khởi tạo chatbot engine
 engine = ChatbotEngine()
-engine.init_engine()
+engine.init_engine_base()
+# ======================================================================================================================================================
 
 # Tự động cập nhật dữ liệu sách 1 ngày/lần
 def auto_update_books_data():
@@ -48,59 +47,38 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(auto_update_books_data, "interval", days=1)  # chạy mỗi ngày 1 lần
 scheduler.start()
 
+# ======================================================================================================================================================
 
 @app.get("/")
 async def read_root():
     return {"Title": "BookScraper-and-TTS"}
 
+class AskRequest(BaseModel):
+    user_id: str
+    question: str
+    session_id: str | None = None
+
+class EndSessionRequest(BaseModel):
+    user_id: str
+    session_id: str
+
 @app.post("/ask")
-async def ask(ques: str):
-    answer = engine.ask(ques)
-    return {"question": ques, "answer": answer}
+def ask(req: AskRequest):
+    response = engine.ask(user_id=req.user_id, question=req.question, session_id=req.session_id)
+    return response
 
-# @app.get("/bands/{band_id}")
-# async def get_bands(band_id: int) -> dict:
-#     band = next((b for b in BANDS if b["id"] == band_id), None)
-#     if band is None:
-#         raise HTTPException(status_code=404, detail="Band not found")
-#     return band
-
-# @app.put("/books/update_data")
-# async def update_books_data():
-#     scrape = Scrape()
-#     csv_data = CSV_DATA_BOOK()
-#     try:
-#         all_books_data = scrape.scrape_all_pages_selenium(
-#             url=os.getenv("NEW_BOOK_URL"),
-#         )
-#         csv_data.update_csv(all_books_data)
-#         return JSONResponse(
-#             status_code=200, 
-#             content={
-#                 "status": "success",
-#                 "message": "Books data updated successfully",
-#             }
-#         )
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))    
-    
-# @app.get("/books/get_data")
-# async def get_books_data():
-#     csv_data = CSV_DATA_BOOK()
-#     try:
-#         data_books = csv_data.get_data()
-#         return JSONResponse(
-#             status_code=200, 
-#             content={
-#                 "status": "success",
-#                 "data": data_books
-#             }
-#         )
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
+@app.post("/end_session")
+def end_session(req: EndSessionRequest):
+    engine.end_session(req.user_id, req.session_id)
+    return {"status": "session cleared"}
 
 
-# dict: {key url : key path}
+
+
+
+
+# ======================================================================================================================================================
+# dict url env key -> csv path env key
 category_map = {
     "ADVENTURE_URL": "data_adventure_path",
     "DETECTIVE": "data_detective_path",
