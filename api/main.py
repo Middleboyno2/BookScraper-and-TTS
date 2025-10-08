@@ -1,10 +1,15 @@
 from typing import Union
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, status, Depends, Request
+from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+
 from apscheduler.schedulers.background import BackgroundScheduler
 import time
 import os
+import logging
 
 from dotenv import load_dotenv
 from scrape.scrape_web import Scrape
@@ -14,10 +19,64 @@ from chatbot.chatbot import ChatbotEngine
 
 load_dotenv(dotenv_path="url.env")
 
-app = FastAPI()
-# Khởi tạo chatbot engine
-engine = ChatbotEngine()
-engine.init_engine_base()
+
+# # Khởi tạo chatbot engine
+# engine = ChatbotEngine()
+# engine.init_engine_base()
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Global engine instance
+chatbot_engine = None
+
+# --- LIFESPAN CONTEXT MANAGER ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Khởi tạo engine khi start app, cleanup khi shutdown"""
+    global chatbot_engine
+    
+    logger.info("Khởi động ứng dụng...")
+    try:
+        chatbot_engine = ChatbotEngine(window_size=5)
+        chatbot_engine.init_engine_base()
+        logger.info("ChatbotEngine đã sẵn sàng!")
+    except Exception as e:
+        logger.error(f"Lỗi khởi tạo engine: {e}")
+        raise
+    
+    yield
+    
+    logger.info("Đang dọn dẹp resources...")
+    # Cleanup nếu cần
+    chatbot_engine = None
+    
+# --- FASTAPI APP ---
+app = FastAPI(
+    lifespan=lifespan
+)
+
+# CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Trong production nên chỉ định cụ thể
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+    
+# === DEPENDENCY ======================================================================================================================================
+
+def get_engine():
+    """Dependency để lấy engine instance"""
+    if chatbot_engine is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Chatbot engine chưa được khởi tạo"
+        )
+    return chatbot_engine
+
 # ======================================================================================================================================================
 
 # Tự động cập nhật dữ liệu sách 1 ngày/lần
@@ -47,37 +106,293 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(auto_update_books_data, "interval", days=1)  # chạy mỗi ngày 1 lần
 scheduler.start()
 
-# ======================================================================================================================================================
 
-@app.get("/")
-async def read_root():
-    return {"Title": "BookScraper-and-TTS"}
+# === PYDANTIC MODELS ==================================================================================================================================
 
-class AskRequest(BaseModel):
+class QuestionRequest(BaseModel):
+    """Request model cho câu hỏi"""
+    user_id: str = Field(..., min_length=1, description="ID của user")
+    question: str = Field(..., min_length=1, description="Câu hỏi của user")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_id": "user123",
+                "question": "Giới thiệu sách trinh thám hay"
+            }
+        }
+
+
+class AnswerResponse(BaseModel):
+    """Response model cho câu trả lời"""
+    answer: str = Field(..., description="Câu trả lời từ chatbot")
+    user_id: str = Field(..., description="ID của user")
+    is_new_session: bool = Field(..., description="Session mới được tạo hay không")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "answer": "Dưới đây là một số sách trinh thám hay...",
+                "user_id": "user123",
+                "is_new_session": True
+            }
+        }
+
+
+class SessionInfoResponse(BaseModel):
+    """Response model cho thông tin session"""
     user_id: str
-    question: str
-    session_id: str | None = None
+    exists: bool
+    history_count: int
+    window_size: Optional[int] = None
 
-class EndSessionRequest(BaseModel):
+
+class MessageResponse(BaseModel):
+    """Response model cho các thao tác thành công"""
+    message: str
     user_id: str
-    session_id: str
-
-@app.post("/ask")
-def ask(req: AskRequest):
-    response = engine.ask(user_id=req.user_id, question=req.question, session_id=req.session_id)
-    return response
-
-@app.post("/end_session")
-def end_session(req: EndSessionRequest):
-    engine.end_session(req.user_id, req.session_id)
-    return {"status": "session cleared"}
+    success: bool = True
 
 
+class ActiveSessionsResponse(BaseModel):
+    """Response model cho danh sách session active"""
+    active_sessions: List[str]
+    total_count: int
 
 
+class HealthResponse(BaseModel):
+    """Response model cho health check"""
+    status: str
+    engine_initialized: bool
 
 
-# ======================================================================================================================================================
+# === API ENDPOINTS ====================================================================================================================================
+
+@app.get("/", tags=["Root"])
+async def root():
+    """Root endpoint"""
+    return {
+        "message": "Chatbot API is running",
+        "docs": "/docs",
+        "health": "/health"
+    }
+
+
+@app.get("/health", response_model=HealthResponse, tags=["Health"])
+async def health_check():
+    """Kiểm tra trạng thái của service"""
+    return {
+        "status": "healthy" if chatbot_engine is not None else "unhealthy",
+        "engine_initialized": chatbot_engine is not None
+    }
+
+
+@app.post(
+    "/ask",
+    response_model=AnswerResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["Chat"]
+)
+async def ask_question(
+    request: QuestionRequest,
+    engine: ChatbotEngine = Depends(get_engine)
+):
+    """
+    Gửi câu hỏi và nhận câu trả lời
+    
+    - **user_id**: ID duy nhất của user (tự động tạo session nếu chưa có)
+    - **question**: Câu hỏi cần trả lời
+    """
+    try:
+        result = engine.ask(
+            user_id=request.user_id,
+            question=request.question
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Lỗi khi xử lý câu hỏi: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi xử lý câu hỏi: {str(e)}"
+        )
+
+
+@app.get(
+    "/session/{user_id}",
+    response_model=SessionInfoResponse,
+    tags=["Session Management"]
+)
+async def get_session_info(
+    user_id: str,
+    engine: ChatbotEngine = Depends(get_engine)
+):
+    """
+    Lấy thông tin về session của user
+    
+    - **user_id**: ID của user
+    """
+    try:
+        info = engine.get_session_info(user_id)
+        return info
+    except Exception as e:
+        logger.error(f"Lỗi khi lấy thông tin session: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi lấy thông tin session: {str(e)}"
+        )
+
+
+@app.get(
+    "/session/{user_id}/history",
+    response_model=List[Dict[str, Any]],
+    tags=["Session Management"]
+)
+async def get_session_history(
+    user_id: str,
+    engine: ChatbotEngine = Depends(get_engine)
+):
+    """
+    Lấy lịch sử hội thoại của user
+    
+    - **user_id**: ID của user
+    """
+    try:
+        history = engine.get_session_history(user_id)
+        
+        # Convert messages to dict format
+        history_dict = []
+        for msg in history:
+            history_dict.append({
+                "type": msg.__class__.__name__,
+                "content": msg.content
+            })
+        
+        return history_dict
+    except Exception as e:
+        logger.error(f"Lỗi khi lấy lịch sử: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi lấy lịch sử: {str(e)}"
+        )
+
+
+@app.delete(
+    "/session/{user_id}/history",
+    response_model=MessageResponse,
+    tags=["Session Management"]
+)
+async def clear_session_history(
+    user_id: str,
+    engine: ChatbotEngine = Depends(get_engine)
+):
+    """
+    Xóa lịch sử chat nhưng giữ session
+    
+    - **user_id**: ID của user
+    """
+    try:
+        engine.clear_session(user_id)
+        return {
+            "message": "Đã xóa lịch sử chat",
+            "user_id": user_id,
+            "success": True
+        }
+    except Exception as e:
+        logger.error(f"Lỗi khi xóa lịch sử: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi xóa lịch sử: {str(e)}"
+        )
+
+
+@app.delete(
+    "/session/{user_id}",
+    response_model=MessageResponse,
+    tags=["Session Management"]
+)
+async def end_session(
+    user_id: str,
+    engine: ChatbotEngine = Depends(get_engine)
+):
+    """
+    Kết thúc và xóa hoàn toàn session của user
+    
+    - **user_id**: ID của user
+    """
+    try:
+        engine.end_session(user_id)
+        return {
+            "message": "Đã kết thúc session",
+            "user_id": user_id,
+            "success": True
+        }
+    except Exception as e:
+        logger.error(f"Lỗi khi kết thúc session: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi kết thúc session: {str(e)}"
+        )
+
+
+@app.get(
+    "/sessions/active",
+    response_model=ActiveSessionsResponse,
+    tags=["Session Management"]
+)
+async def get_active_sessions(
+    engine: ChatbotEngine = Depends(get_engine)
+):
+    """
+    Lấy danh sách tất cả session đang active
+    """
+    try:
+        sessions = engine.get_active_sessions()
+        return {
+            "active_sessions": sessions,
+            "total_count": len(sessions)
+        }
+    except Exception as e:
+        logger.error(f"Lỗi khi lấy danh sách session: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi lấy danh sách session: {str(e)}"
+        )
+
+
+# --- ERROR HANDLERS ---
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Custom HTTP exception handler"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": True,
+            "message": exc.detail,
+            "status_code": exc.status_code
+        }
+    )
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """General exception handler"""
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "error": True,
+            "message": "Lỗi server không xác định",
+            "detail": str(exc),
+            "status_code": 500
+        }
+    )
+
+    
+    
+    
+    
+    
+
 # dict url env key -> csv path env key
 category_map = {
     "ADVENTURE_URL": "data_adventure_path",

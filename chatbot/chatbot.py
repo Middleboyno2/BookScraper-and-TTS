@@ -1,11 +1,10 @@
 from langchain_community.llms import GPT4All
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.chains import RetrievalQA
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.prompts import PromptTemplate
 from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferMemory
+from langchain.memory import ConversationBufferWindowMemory
 
 
 from dotenv import load_dotenv
@@ -34,10 +33,11 @@ class ChatbotEngine:
       - Khởi tạo Chroma + GPT4All
       - Quản lý nhiều session (mỗi session có memory riêng)
     """
-    def __init__(self, data_dir=DATA_DIR, model_path=MODEL_PATH, chroma_dir=CHROMA_DIR):
+    def __init__(self, data_dir=DATA_DIR, model_path=MODEL_PATH, chroma_dir=CHROMA_DIR, window_size=5):
         self.data_dir = data_dir
         self.model_path = model_path
         self.chroma_dir = chroma_dir
+        self.window_size = window_size
 
         self.local_llm = None
         self.retriever = None
@@ -51,7 +51,7 @@ class ChatbotEngine:
             df = pd.read_csv(file)
 
             for _, row in df.iterrows():
-                content = f"{row['title']} {row['genre']} {row['url']} {row['img_path']} {row['views']} {row['downloads']}"
+                content = f"{row['title']} {row['genre']} {row['url']} {row['img_path']}"
                 metadata = {
                     "title": row.get("title", "Unknown"),
                     "genre": row.get("genre", "Unknown"),
@@ -85,16 +85,15 @@ class ChatbotEngine:
             callbacks=[MyCustomHandler()],
             verbose=True
         )
-
-        print("✅ Engine đã sẵn sàng (retriever + model).")
+        print(">> Khởi tạo engine hoàn tất.")
 
     # --- SESSION MANAGEMENT ---
     def _create_chain(self):
         """Tạo 1 chain mới (memory riêng)"""
         template = """Bạn là chatbot giới thiệu sách, trả lời bằng tiếng Việt.
         Dùng thông tin trong Context để trả lời.
-        Nếu có sách phù hợp thì trả lời tên + link.
-        Nếu không có thì nói: "Không tìm thấy dữ liệu cho truyện này".
+        Nếu có sách phù hợp thì trả lời tittle + link url sách + link ảnh.
+        Nếu không có thì nói: "Không tìm thấy dữ liệu cho sách này" và đưa ra vài gợi ý cho cuốn sách có liên quan.
 
         Context: {context}
         Question: {question}
@@ -105,43 +104,132 @@ class ChatbotEngine:
             template=template
         )
 
-        memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+        # Sử dụng ConversationBufferWindowMemory với window_size
+        memory = ConversationBufferWindowMemory(
+            k=self.window_size,  # Giữ k cặp hội thoại gần nhất
+            memory_key="chat_history",
+            return_messages=True,
+            output_key="answer"
+        )
         return ConversationalRetrievalChain.from_llm(
             llm=self.local_llm,
             retriever=self.retriever,
             memory=memory,
-            combine_docs_chain_kwargs={"prompt": prompt}
+            combine_docs_chain_kwargs={"prompt": prompt},
+            return_source_documents=False
         )
 
-    def ask(self, user_id: str, question: str, session_id: str = None):
-        """Trả lời câu hỏi — tự khởi tạo session nếu chưa có"""
+    def ask(self, user_id: str, question: str):
+        """
+        Trả lời câu hỏi cho user_id cụ thể.
+        Tự động tạo session mới nếu user_id chưa tồn tại.
+        
+        Args:
+            user_id: ID của user từ client
+            question: Câu hỏi của user
+            
+        Returns:
+            dict: {"answer": str, "user_id": str, "is_new_session": bool}
+        """
         if not self.local_llm or not self.retriever:
             raise RuntimeError("Engine chưa được khởi tạo. Gọi init_engine_base() trước.")
 
-        # Nếu user chưa có session list
+        # Kiểm tra xem user_id đã có session chưa
+        is_new_session = user_id not in self.sessions
+        
+        if is_new_session:
+            print(f">> Tạo session mới cho user: {user_id}")
+            self.sessions[user_id] = self._create_chain()
+        
+        # Lấy chain của user
+        chain = self.sessions[user_id]
+        
+        # Thực hiện truy vấn
+        result = chain.invoke({"question": question})
+        
+        return {
+            "answer": result["answer"],
+            "user_id": user_id,
+            "is_new_session": is_new_session
+        }
+
+    def get_session_history(self, user_id: str):
+        """
+        Lấy lịch sử hội thoại của user_id
+        
+        Args:
+            user_id: ID của user
+            
+        Returns:
+            list: Danh sách các message trong memory
+        """
         if user_id not in self.sessions:
-            self.sessions[user_id] = {}
+            return []
+        
+        chain = self.sessions[user_id]
+        memory = chain.memory
+        
+        # Lấy chat history
+        return memory.load_memory_variables({}).get("chat_history", [])
 
-        # Nếu chưa có session_id thì tạo mới
-        if not session_id:
-            session_id = str(uuid.uuid4())
-            print(f"Tạo session_id mới cho user {user_id}: {session_id}")
-
-        # Nếu session_id chưa tồn tại -> tạo chain mới
-        if session_id not in self.sessions[user_id]:
-            self.sessions[user_id][session_id] = self._create_chain()
-            print(f"Tạo chain mới cho {user_id}:{session_id}")
-
-        chain = self.sessions[user_id][session_id]
-        result = chain({"question": question})
-        return {"answer": result["answer"], "session_id": session_id}
-
-    def end_session(self, user_id: str, session_id: str):
-        """Xoá session"""
-        if user_id in self.sessions and session_id in self.sessions[user_id]:
-            del self.sessions[user_id][session_id]
-            print(f"Đã xoá session {session_id} của user {user_id}")
-            if not self.sessions[user_id]:
-                del self.sessions[user_id]
+    def clear_session(self, user_id: str):
+        """
+        Xóa lịch sử chat của user nhưng giữ session
+        
+        Args:
+            user_id: ID của user
+        """
+        if user_id in self.sessions:
+            chain = self.sessions[user_id]
+            chain.memory.clear()
+            print(f">> Đã xóa lịch sử chat của user: {user_id}")
         else:
-            print(f"Session {session_id} không tồn tại cho user {user_id}")
+            print(f">> User {user_id} không có session")
+
+    def end_session(self, user_id: str):
+        """
+        Kết thúc và xóa hoàn toàn session của user
+        
+        Args:
+            user_id: ID của user
+        """
+        if user_id in self.sessions:
+            del self.sessions[user_id]
+            print(f">> Đã kết thúc session của user: {user_id}")
+        else:
+            print(f">> User {user_id} không có session để kết thúc")
+
+    def get_active_sessions(self):
+        """
+        Lấy danh sách các user_id đang có session active
+        
+        Returns:
+            list: Danh sách user_id
+        """
+        return list(self.sessions.keys())
+
+    def get_session_info(self, user_id: str):
+        """
+        Lấy thông tin về session của user
+        
+        Args:
+            user_id: ID của user
+            
+        Returns:
+            dict: Thông tin session
+        """
+        if user_id not in self.sessions:
+            return {
+                "user_id": user_id,
+                "exists": False,
+                "history_count": 0
+            }
+        
+        history = self.get_session_history(user_id)
+        
+        return {
+            "user_id": user_id,
+            "exists": True,
+            "history_count": len(history),
+            "window_size": self.window_size
+        }
