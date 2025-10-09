@@ -80,7 +80,7 @@ def get_engine():
 # ======================================================================================================================================================
 
 # Tự động cập nhật dữ liệu sách 1 ngày/lần
-def auto_update_books_data():
+def auto_update_books_data(engine: ChatbotEngine = Depends(get_engine)):
     scrape = Scrape()
     csv_data = CSV_DATA_BOOK()
     
@@ -96,6 +96,8 @@ def auto_update_books_data():
             print(f"Đang cập nhật: {url_key} -> {csv_file}")
             all_books_data = scrape.scrape_all_pages_selenium_2(url)
             csv_data.update_csv(csv_file, all_books_data)
+            engine.update_chroma_db()
+            
             print(f"Hoàn thành {url_key}")
         except Exception as e:
             print(f"Lỗi khi cập nhật {url_key}: {e}")

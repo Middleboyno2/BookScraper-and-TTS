@@ -13,6 +13,9 @@ import glob
 import pandas as pd
 import uuid
 from langchain.schema import Document
+import re
+import unicodedata
+from hashlib import md5
 
 
 load_dotenv(dotenv_path="url.env")
@@ -42,6 +45,38 @@ class ChatbotEngine:
         self.local_llm = None
         self.retriever = None
         self.sessions = {}  # Lưu {session_key: ConversationalRetrievalChain}
+        
+        
+    @staticmethod
+    def normalize_text(text):
+        """
+        Chuẩn hóa text: loại bỏ dấu, chuyển thành chữ thường
+        Dùng để tăng khả năng tìm kiếm
+        """
+        if not isinstance(text, str):
+            return str(text)
+        
+        # Chuyển về chữ thường
+        text = text.lower()
+        
+        # Loại bỏ dấu tiếng Việt
+        text = unicodedata.normalize('NFD', text)
+        text = ''.join(char for char in text if unicodedata.category(char) != 'Mn')
+        
+        # Loại bỏ ký tự đặc biệt, giữ lại chữ, số và khoảng trắng
+        text = re.sub(r'[^\w\s]', ' ', text)
+        
+        # Loại bỏ khoảng trắng thừa
+        text = ' '.join(text.split())
+        
+        return text
+    
+    @staticmethod
+    def lower_text(text):
+        """Chuyển text về chữ thường, giữ nguyên dấu"""
+        if not isinstance(text, str):
+            return str(text)
+        return text.lower()
 
     # --- LOAD CSV ---
     def load_all_csv(self):
@@ -51,9 +86,22 @@ class ChatbotEngine:
             df = pd.read_csv(file)
 
             for _, row in df.iterrows():
-                content = f"{row['title']} {row['genre']} {row['url']} {row['img_path']}"
+                # Content gốc (có dấu)
+                original_content = f"{row['title']} {row['genre']}"
+                
+                # content chuẩn hóa (chữ thường)
+                lower_content = self.lower_text(original_content)
+                
+                # Content chuẩn hóa (không dấu) để tăng khả năng tìm kiếm
+                normalized_content = self.normalize_text(original_content)
+                
+                # Kết hợp cả 2 để search được cả có dấu và không dấu
+                combined_content = f"{original_content} {lower_content} {normalized_content}"
+                
                 metadata = {
                     "title": row.get("title", "Unknown"),
+                    "title_lower": self.lower_text(row.get("title", "Unknown")),
+                    "title_normalized": self.normalize_text(row.get("title", "Unknown")),
                     "genre": row.get("genre", "Unknown"),
                     "url": row.get("url", "Unknown"),
                     "img_path": row.get("img_path", "Unknown"),
@@ -61,8 +109,55 @@ class ChatbotEngine:
                     "downloads": row.get("downloads", 0),
                     "category": os.path.relpath(file, self.data_dir)
                 }
-                documents.append(Document(page_content=content, metadata=metadata))
+                
+                documents.append(Document(page_content=combined_content, metadata=metadata))
         return documents
+    
+    def update_chroma_db(self):
+        """
+        Cập nhật Chroma DB từ các file CSV trong data_dir.
+        - Chỉ thêm document mới chưa tồn tại trong DB.
+        - Không xóa dữ liệu cũ.
+        """
+        print("Đang đọc dữ liệu từ CSV...")
+        docs, ids = self.load_all_csv()
+
+        print(f"Tổng số tài liệu quét được: {len(docs)}")
+
+        # Kết nối hoặc khởi tạo DB
+        db = Chroma(
+            persist_directory=self.chroma_dir,
+            embedding_function=self.embeddings
+        )
+
+        # Lấy danh sách ID đã có trong DB
+        existing_data = db.get()
+        existing_ids = set(existing_data["ids"])
+        print(f"DB hiện có {len(existing_ids)} tài liệu.")
+
+        # So sánh và lọc ra những tài liệu mới
+        new_docs, new_ids = [], []
+        for doc, id_ in zip(docs, ids):
+            if id_ not in existing_ids:
+                new_docs.append(doc)
+                new_ids.append(id_)
+
+        # Nếu có dữ liệu mới thì thêm vào DB
+        if new_docs:
+            print(f"Thêm {len(new_docs)} tài liệu mới vào DB...")
+            db.add_documents(new_docs, ids=new_ids)
+            db.persist()
+            print("Cập nhật DB thành công!")
+        else:
+            print("Không có tài liệu mới để thêm. DB đã cập nhật.")
+
+        # Tạo retriever để dùng cho LLM
+        self.retriever = db.as_retriever(
+            search_type="similarity",
+            search_kwargs={"k": 100}
+        )
+
+        return db
 
     def init_engine_base(self):
         """Chỉ khởi tạo embeddings, vector DB và LLM (chưa tạo chain/memory)"""
@@ -74,10 +169,26 @@ class ChatbotEngine:
             model_name="dangvantuan/vietnamese-embedding",
             encode_kwargs={"normalize_embeddings": True}
         )
+        
+        if not os.path.exists(self.chroma_dir):
+            db = Chroma.from_documents(docs, embeddings, persist_directory=self.chroma_dir)
+        else:
+            db = Chroma(
+                persist_directory=self.chroma_dir,
+                embedding_function=embeddings
+            )
+        
+        print(f"Số lượng embeddings hiện tại: {db._collection.count()}")
 
-        print(">> Khởi tạo Chroma DB...")
-        db = Chroma.from_documents(docs, embeddings, persist_directory=self.chroma_dir)
-        self.retriever = db.as_retriever()
+        # Tạo retriever với search_kwargs để tăng số kết quả
+        self.retriever = db.as_retriever(
+            search_type="mmr",       # đa dạng két quả
+            search_kwargs={
+                "k": 5,  # Số lượng vừa phải
+                "fetch_k": 20,  # Fetch nhiều để có nhiều lựa chọn
+                "lambda_mult": 0.5  # Đa dạng hóa kết quả
+            }
+        )
 
         print(">> Load LLM local GPT4All...")
         self.local_llm = GPT4All(
@@ -90,17 +201,27 @@ class ChatbotEngine:
     # --- SESSION MANAGEMENT ---
     def _create_chain(self):
         """Tạo 1 chain mới (memory riêng)"""
-        template = """Bạn là chatbot giới thiệu sách, trả lời bằng tiếng Việt.
-        Dùng thông tin trong Context để trả lời.
-        Nếu có sách phù hợp thì trả lời tittle + link url sách + link ảnh.
-        Nếu không có thì nói: "Không tìm thấy dữ liệu cho sách này" và đưa ra vài gợi ý cho cuốn sách có liên quan.
+        
+        #===================================================================================================================================================
+        # Template cho việc trả lời dựa trên context và lịch sử chat
+        template = """Bạn là một chatbot tên MrLoi, việc của bạn là tìm kiếm và đưa ra thông tin sách, trả lời bằng tiếng Việt.
+        Dùng thông tin trong context để trả lời.
+        Hướng dẫn trả lời:
+        - Nếu tìm thấy sách phù hợp, trả lời: Tên sách, thể loại, link URL và link ảnh
+        - Nếu không tìm thấy, nói: "Không tìm thấy dữ liệu cho sách này" và trả về toàn bộ thông tin sách tìm được
+        - Trả lời đầy đủ thông tin một cách tự nhiên
 
-        Context: {context}
-        Question: {question}
-        Answer:"""
+        Lịch sử chat:
+        {chat_history}
+
+        Thông tin sách tìm được:
+        {context}
+
+        Câu hỏi hiện tại: {question}
+        Trả lời:"""
 
         prompt = PromptTemplate(
-            input_variables=["context", "question"],
+            input_variables=["context","chat_history", "question"],
             template=template
         )
 
@@ -116,7 +237,8 @@ class ChatbotEngine:
             retriever=self.retriever,
             memory=memory,
             combine_docs_chain_kwargs={"prompt": prompt},
-            return_source_documents=False
+            return_source_documents=True,
+            verbose=True
         )
 
     def ask(self, user_id: str, question: str):
