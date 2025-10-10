@@ -15,7 +15,7 @@ import uuid
 from langchain.schema import Document
 import re
 import unicodedata
-from hashlib import md5
+import hashlib
 
 
 load_dotenv(dotenv_path="url.env")
@@ -64,7 +64,7 @@ class ChatbotEngine:
         text = ''.join(char for char in text if unicodedata.category(char) != 'Mn')
         
         # Loại bỏ ký tự đặc biệt, giữ lại chữ, số và khoảng trắng
-        text = re.sub(r'[^\w\s]', ' ', text)
+        text = re.sub(r'[^\w\s:\-,]', ' ', text)
         
         # Loại bỏ khoảng trắng thừa
         text = ' '.join(text.split())
@@ -82,6 +82,8 @@ class ChatbotEngine:
     def load_all_csv(self):
         """Đọc tất cả CSV trong data_dir -> list Document"""
         documents = []
+        seen_hashes = set()  # Lưu dấu vết nội dung đã thêm
+        
         for file in glob.glob(f"{self.data_dir}/**/*.csv", recursive=True):
             df = pd.read_csv(file)
 
@@ -97,6 +99,14 @@ class ChatbotEngine:
                 
                 # Kết hợp cả 2 để search được cả có dấu và không dấu
                 combined_content = f"{original_content} {lower_content} {normalized_content}"
+                
+                # --- Tạo hash từ combined_content ---
+                content_hash = hashlib.md5(combined_content.encode("utf-8")).hexdigest()
+
+                # --- Bỏ qua nếu trùng ---
+                if content_hash in seen_hashes:
+                    continue
+                seen_hashes.add(content_hash)
                 
                 metadata = {
                     "title": row.get("title", "Unknown"),
@@ -166,7 +176,7 @@ class ChatbotEngine:
 
         print(">> Đang tạo embeddings...")
         embeddings = HuggingFaceEmbeddings(
-            model_name="dangvantuan/vietnamese-embedding",
+            model_name="AITeamVN/Vietnamese_Embedding",
             encode_kwargs={"normalize_embeddings": True}
         )
         
@@ -186,7 +196,7 @@ class ChatbotEngine:
             search_kwargs={
                 "k": 5,  # Số lượng vừa phải
                 "fetch_k": 20,  # Fetch nhiều để có nhiều lựa chọn
-                "lambda_mult": 0.5  # Đa dạng hóa kết quả
+                "lambda_mult": 0.7  # Đa dạng hóa kết quả
             }
         )
 
@@ -204,26 +214,38 @@ class ChatbotEngine:
         
         #===================================================================================================================================================
         # Template cho việc trả lời dựa trên context và lịch sử chat
-        template = """Bạn là một chatbot tên MrLoi, việc của bạn là tìm kiếm và đưa ra thông tin sách, trả lời bằng tiếng Việt.
-        Dùng thông tin trong context để trả lời.
+        template = """Bạn là chatbot tên MrLoi, nhiệm vụ của bạn là giới thiệu sách dựa trên thông tin được cung cấp.
+        TUYỆT ĐỐI KHÔNG TỰ Ý bịa đặt hoặc tìm kiếm thông tin từ nguồn khác!
         Hướng dẫn trả lời:
-        - Nếu tìm thấy sách phù hợp, trả lời: Tên sách, thể loại, link URL và link ảnh
-        - Nếu không tìm thấy, nói: "Không tìm thấy dữ liệu cho sách này" và trả về toàn bộ thông tin sách tìm được
-        - Trả lời đầy đủ thông tin một cách tự nhiên
-
-        Lịch sử chat:
-        {chat_history}
+        - Luôn trả lời bằng tiếng Việt
+        - CHỈ sử dụng thông tin có SẴN trong Thông tin sách tìm được phía trên
+        - Nếu tìm thấy sách phù hợp: Trả lời đã tìm thấy tên sách, thể loại CHÍNH XÁC từ Thông tin sách tìm được
+        - Nếu không tìm thấy: Nói "Không tìm thấy sách này trong dữ liệu, dưới đây là 1 số sách liên quan bạn có thể thích"
+        - KHÔNG tự bịa link, KHÔNG tìm kiếm Google, không thêm thông tin không có trong Thông tin sách tìm được
 
         Thông tin sách tìm được:
         {context}
 
-        Câu hỏi hiện tại: {question}
+        Câu hỏi: {question}
         Trả lời:"""
 
         prompt = PromptTemplate(
-            input_variables=["context","chat_history", "question"],
+            input_variables=["context", "question"],
             template=template
         )
+        
+        # # Condense question prompt
+        # condense_template = """Giữ nguyên câu hỏi gốc, không thay đổi ngữ nghĩa.
+
+        # Câu hỏi: {question}
+
+        # Câu hỏi độc lập:"""
+
+        # condense_prompt = PromptTemplate(
+        #     input_variables=["chat_history", "question"],
+        #     template=condense_template
+        # )
+        
 
         # Sử dụng ConversationBufferWindowMemory với window_size
         memory = ConversationBufferWindowMemory(
@@ -236,7 +258,8 @@ class ChatbotEngine:
             llm=self.local_llm,
             retriever=self.retriever,
             memory=memory,
-            combine_docs_chain_kwargs={"prompt": prompt},
+            
+            combine_docs_chain_kwargs={"prompt": prompt, },
             return_source_documents=True,
             verbose=True
         )
@@ -269,10 +292,23 @@ class ChatbotEngine:
         # Thực hiện truy vấn
         result = chain.invoke({"question": question})
         
+        # Lấy source documents
+        docs = result.get('source_documents', [])
+    
+        # Format response chắc chắn đúng
+        books = []
+        for doc in docs:
+            books.append({
+                "title": doc.metadata['title'],
+                "genre": doc.metadata['genre'],
+                "url": doc.metadata['url'],
+                "img_path": doc.metadata['img_path']
+            })
+        
         return {
             "answer": result["answer"],
             "user_id": user_id,
-            "is_new_session": is_new_session
+            "books": books
         }
 
     def get_session_history(self, user_id: str):

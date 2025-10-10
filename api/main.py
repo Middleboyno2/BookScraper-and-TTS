@@ -96,8 +96,8 @@ def auto_update_books_data(engine: ChatbotEngine = Depends(get_engine)):
             print(f"Đang cập nhật: {url_key} -> {csv_file}")
             all_books_data = scrape.scrape_all_pages_selenium_2(url)
             csv_data.update_csv(csv_file, all_books_data)
-            engine.update_chroma_db()
-            
+            if os.path.exists(engine.chroma_dir):
+                engine.update_chroma_db()
             print(f"Hoàn thành {url_key}")
         except Exception as e:
             print(f"Lỗi khi cập nhật {url_key}: {e}")
@@ -110,6 +110,13 @@ scheduler.start()
 
 
 # === PYDANTIC MODELS ==================================================================================================================================
+
+class BookInfo(BaseModel):
+    title: str
+    genre: str
+    url: str
+    img_path: str
+
 
 class QuestionRequest(BaseModel):
     """Request model cho câu hỏi"""
@@ -129,14 +136,21 @@ class AnswerResponse(BaseModel):
     """Response model cho câu trả lời"""
     answer: str = Field(..., description="Câu trả lời từ chatbot")
     user_id: str = Field(..., description="ID của user")
-    is_new_session: bool = Field(..., description="Session mới được tạo hay không")
+    book: Optional[List[BookInfo]] = Field(None, description="Danh sách sách được tìm thấy")
     
     class Config:
         json_schema_extra = {
             "example": {
                 "answer": "Dưới đây là một số sách trinh thám hay...",
                 "user_id": "user123",
-                "is_new_session": True
+                "books": [
+                    {
+                    "title": "Lấy Tên Của Ai Lặng Lẽ Yêu Em",
+                    "genre": "Lãng mạn",
+                    "url": "https://ebookvie.com/ebook/lay-ten-cua-ai-lang-le-yeu-em/",
+                    "img_path": "https://ebookvie.com/wp-content/uploads/2023/12/ebook-lay-ten-cua-ai-lang-le-yeu-em-prc-pdf-epub.jpg"
+                    }
+                ]
             }
         }
 
@@ -210,6 +224,7 @@ async def ask_question(
             user_id=request.user_id,
             question=request.question
         )
+        logger.info(f"metadata: {result.get('books')}")
         return result
     except Exception as e:
         logger.error(f"Lỗi khi xử lý câu hỏi: {e}")
