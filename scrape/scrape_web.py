@@ -68,7 +68,7 @@ class Scrape:
     
     # Dành cho các trang có pagination đơn giản
     def scrape_all_pages_selenium_2(self, url):
-        driver = setup_driver(headless=False)  # Set False để xem quá trình
+        driver = setup_driver(headless=True)  # Set False để xem quá trình
         all_books = []
 
         try:
