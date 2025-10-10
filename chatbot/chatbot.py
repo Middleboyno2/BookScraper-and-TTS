@@ -5,6 +5,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.prompts import PromptTemplate
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferWindowMemory
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 
 from dotenv import load_dotenv
@@ -19,6 +20,7 @@ import hashlib
 
 
 load_dotenv(dotenv_path="url.env")
+load_dotenv(dotenv_path="api.env")
 
 # MODEL_ID = os.getenv("MODEL_GEMMA_ID")
 MODEL_PATH = os.getenv("MODEL_GPT4ALL_PATH")
@@ -200,11 +202,16 @@ class ChatbotEngine:
             }
         )
 
-        print(">> Load LLM local GPT4All...")
-        self.local_llm = GPT4All(
-            model=self.model_path,
-            callbacks=[MyCustomHandler()],
-            verbose=True
+        # print(">> Load LLM local GPT4All...")
+        # self.local_llm = GPT4All(
+        #     model=self.model_path,
+        #     callbacks=[MyCustomHandler()],
+        #     verbose=True
+        # )
+        self.local_llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            temperature=0.3,
+            google_api_key=os.getenv("GOOGLE_API_KEY"),
         )
         print(">> Khởi tạo engine hoàn tất.")
 
@@ -215,13 +222,14 @@ class ChatbotEngine:
         #===================================================================================================================================================
         # Template cho việc trả lời dựa trên context và lịch sử chat
         template = """Bạn là chatbot tên MrLoi, nhiệm vụ của bạn là giới thiệu sách dựa trên thông tin được cung cấp.
-        TUYỆT ĐỐI KHÔNG TỰ Ý bịa đặt hoặc tìm kiếm thông tin từ nguồn khác!
+        
         Hướng dẫn trả lời:
         - Luôn trả lời bằng tiếng Việt
         - CHỈ sử dụng thông tin có SẴN trong Thông tin sách tìm được phía trên
         - Nếu tìm thấy sách phù hợp: Trả lời đã tìm thấy tên sách, thể loại CHÍNH XÁC từ Thông tin sách tìm được
         - Nếu không tìm thấy: Nói "Không tìm thấy sách này trong dữ liệu, dưới đây là 1 số sách liên quan bạn có thể thích"
-        - KHÔNG tự bịa link, KHÔNG tìm kiếm Google, không thêm thông tin không có trong Thông tin sách tìm được
+        - cho phép có thể tìm kiếm thông tin từ Google, trong trường hợp không tìm thấy sách trong Thông tin sách tìm được trước!
+        - Trả lời tự nhiên, thân thiện, không máy móc
 
         Thông tin sách tìm được:
         {context}

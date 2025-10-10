@@ -8,7 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
-api_key.env
+api.env
 
 chroma_db/
 data/
