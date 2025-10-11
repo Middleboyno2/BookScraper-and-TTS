@@ -136,7 +136,7 @@ class AnswerResponse(BaseModel):
     """Response model cho câu trả lời"""
     answer: str = Field(..., description="Câu trả lời từ chatbot")
     user_id: str = Field(..., description="ID của user")
-    book: Optional[List[BookInfo]] = Field(None, description="Danh sách sách được tìm thấy")
+    books: Optional[List[BookInfo]] = Field(None, description="Danh sách sách được tìm thấy")
     
     class Config:
         json_schema_extra = {
